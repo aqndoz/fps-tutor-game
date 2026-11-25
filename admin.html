@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tactical 1v1</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; font: 14px monospace; color: #fff; }
+  canvas { display: block; }
+  #msg, #hud, #xh { position: fixed; z-index: 1; text-shadow: 0 0 4px #000; }
+  #msg { inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #hud { left: 8px; bottom: 8px; }
+  #xh { left: 50%; top: 50%; width: 6px; height: 6px; margin: -4px; border: 1px solid #fff; border-radius: 50%; }
+</style>
+<div id="msg">Click to play. WASD move, Space jump, Shift sprint, C crouch, X prone</div>
+<div id="hud"></div><div id="xh"></div>
+<script type="module">
+  import { startGame } from "./game.js";
+  startGame({ role: "admin" });
+</script>
