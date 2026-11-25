@@ -5,13 +5,31 @@
   body { margin: 0; overflow: hidden; background: #000; font: 14px monospace; color: #fff; }
   canvas { display: block; }
   #msg, #hud, #xh { position: fixed; z-index: 1; text-shadow: 0 0 4px #000; }
-  #msg { inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #msg { inset: 0; display: none; align-items: center; justify-content: center; text-align: center; pointer-events: none; }
   #hud { left: 8px; bottom: 8px; }
-  #xh { left: 50%; top: 50%; width: 6px; height: 6px; margin: -4px; border: 1px solid #fff; border-radius: 50%; }
+  #xh { left: 50%; top: 50%; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1px solid #fff; border-radius: 50%; box-sizing: border-box; }
+  #join, #panel { padding: 16px; position: relative; z-index: 2; }
 </style>
-<div id="msg">Click to play. WASD move, Space jump, Shift sprint, C crouch, X prone</div>
+<div id="join"><input id="code" maxlength="6" placeholder="Access code"> <button id="go">Join</button><p id="st"></p></div>
+<div id="msg">Click to play. WASD move, Space jump/vault, Shift sprint, C crouch, X prone, Q/E lean, LMB fire, RMB aim, R reload, 1-5 weapons, V knife, hold G grenade, hold F plant/defuse</div>
 <div id="hud"></div><div id="xh"></div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script type="module">
   import { startGame } from "./game.js";
-  startGame({ role: "guest" });
+  import { ROOM_ID } from "./config.js";
+  const $ = id => document.getElementById(id);
+  $("go").onclick = () => {
+    $("st").textContent = "Connecting...";
+    const peer = new Peer();
+    peer.on("error", e => ($("st").textContent = "Error: " + e.type));
+    peer.on("open", () => {
+      const conn = peer.connect(ROOM_ID, { reliable: true, serialization: "json" });
+      conn.on("open", () => conn.send({ t: "join", code: $("code").value.trim().toUpperCase() }));
+      conn.on("data", m => {
+        if (m.t === "ok") $("st").textContent = "Joined. Waiting for the host to start...";
+        else if (m.t === "err") { $("st").textContent = "Invalid or already used code."; peer.destroy(); }
+        else if (m.t === "start") { conn.removeAllListeners("data"); $("join").remove(); startGame({ role: "guest", conn, mapId: m.map }); }
+      });
+    });
+  };
 </script>

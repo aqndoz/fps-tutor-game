@@ -1,17 +1,61 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Tactical 1v1</title>
+<title>Tactical 1v1 - Host</title>
 <style>
   body { margin: 0; overflow: hidden; background: #000; font: 14px monospace; color: #fff; }
   canvas { display: block; }
   #msg, #hud, #xh { position: fixed; z-index: 1; text-shadow: 0 0 4px #000; }
-  #msg { inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #msg { inset: 0; display: none; align-items: center; justify-content: center; text-align: center; pointer-events: none; }
   #hud { left: 8px; bottom: 8px; }
-  #xh { left: 50%; top: 50%; width: 6px; height: 6px; margin: -4px; border: 1px solid #fff; border-radius: 50%; }
+  #xh { left: 50%; top: 50%; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1px solid #fff; border-radius: 50%; box-sizing: border-box; }
+  #join, #panel { padding: 16px; position: relative; z-index: 2; }
 </style>
-<div id="msg">Click to play. WASD move, Space jump, Shift sprint, C crouch, X prone</div>
+<div id="panel" hidden>
+  <p><b>Host</b> <span id="st">Starting...</span></p>
+  <button id="gen">New access code</button>
+  <div id="codes"></div>
+  <p>Map <select id="map"></select> <button id="start">Start match</button> <small>(works solo too, for testing)</small></p>
+</div>
+<div id="msg">Click to play. WASD move, Space jump/vault, Shift sprint, C crouch, X prone, Q/E lean, LMB fire, RMB aim, R reload, 1-5 weapons, V knife, hold G grenade, hold F plant/defuse</div>
 <div id="hud"></div><div id="xh"></div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script type="module">
   import { startGame } from "./game.js";
-  startGame({ role: "admin" });
+  import { MAPS } from "./maps/index.js";
+  import { ADMIN_PASSWORD, ROOM_ID } from "./config.js";
+  const $ = id => document.getElementById(id);
+  if (prompt("Admin password") === ADMIN_PASSWORD) init(); else document.body.textContent = "Wrong password. Reload to retry.";
+
+  function init() {
+    $("panel").hidden = false;
+    const load = () => JSON.parse(localStorage.codes || "[]"), save = c => (localStorage.codes = JSON.stringify(c));
+    const ALPHA = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";              // no confusing characters
+    const render = () => {
+      $("codes").innerHTML = load().map((c, i) => `<div>${c.c} ${c.used ? "used" : "unused"} <button data-i="${i}">delete</button></div>`).join("");
+    };
+    $("codes").onclick = e => { const i = e.target.dataset.i; if (i !== undefined) { const c = load(); c.splice(i, 1); save(c); render(); } };
+    $("gen").onclick = () => {
+      const c = load(); c.push({ c: Array.from({ length: 6 }, () => ALPHA[Math.floor(Math.random() * ALPHA.length)]).join(""), used: false });
+      save(c); render();
+    };
+    $("map").innerHTML = '<option value="">Random</option>' + MAPS.map(m => `<option value="${m.id}">${m.name}</option>`).join("");
+    render();
+
+    let conn = null;
+    const peer = new Peer(ROOM_ID);
+    peer.on("error", e => ($("st").textContent = "Peer error: " + e.type));
+    peer.on("open", () => ($("st").textContent = "Waiting for a guest..."));
+    peer.on("connection", c => c.on("data", m => {
+      if (m.t !== "join" || conn) return;                         // only 2 players ever
+      const codes = load(), e = codes.find(x => x.c === String(m.code).trim().toUpperCase());
+      if (e && !e.used) { e.used = true; save(codes); render(); conn = c; c.send({ t: "ok" }); $("st").textContent = "Guest connected"; }
+      else c.send({ t: "err" });
+    }));
+    $("start").onclick = () => {
+      const id = $("map").value || MAPS[Math.floor(Math.random() * MAPS.length)].id;
+      if (conn) conn.send({ t: "start", map: id });
+      $("panel").hidden = true;
+      startGame({ role: "admin", conn, mapId: id });
+    };
+  }
 </script>
