@@ -1,7 +1,7 @@
 # Tactical 1v1 (static site)
 
 Status: **stages 1-6 of 8** - movement, stances, vaulting, 5 weapons (semi/full auto, recoil, ADS, reload, lean, knife), cell-by-cell destructible walls with barricade groups, impact grenades with throw preview, PeerJS 1v1 with one-time codes, 10 Hz state sync, footstep indicator, bomb plant/defuse rounds (first to 5).
-Not built yet: question gate and ammo rewards (stage 7), loadout attachments, scope overlays, second map and second storey (stage 8).
+Not built yet: question gate and ammo rewards (stage 7); loadouts, attachments, scopes, settings and the office map (stage 8).
 
 ## Play
 1. Edit `config.js`, deploy (below), open `admin.html`, enter the password, press "New access code".
@@ -17,15 +17,16 @@ Add `?map=<id>` to pick a map.
 Push all files to a repo, then Settings > Pages > deploy from the main branch, root folder. Edit `config.js` first (password, room id).
 
 ## Add a map
-1. Copy `maps/_template.js` to `maps/mymap.js` and draw your map (legend is in the file).
+1. Copy `maps/_template.js` to `maps/mymap.js` and draw your map (the legend is in the file).
 2. Add `import mymap from "./mymap.js";` to `maps/index.js`.
 3. Add `mymap` to the `MAPS` array there. It appears in the admin dropdown automatically.
-The validator logs a `console.warn` for a missing spawn or bomb site, uneven rows or unknown characters.
+Every character is a 0.5 m cell, so walls are thin and made of many small cells. Each round the attacker starts at a `1` outside; the defender starts in a random room marked with `S` and the attacker must plant there. Stairs are runs of `^ v < >` (6 in a row = one floor; the floor above needs a void over them).
+The validator logs a `console.warn` for a missing `1` or `S`, uneven rows or unknown characters.
 
 ## Notes
 - PeerJS uses its free public signalling server and Google STUN; very strict networks may need a TURN server.
 - Hit/removal counters for reinforced cells and barricades are kept per machine; the removed-cell lists are what keeps both screens in sync.
 - The opponent's grenade flight is not drawn; they see the explosion.
-- The shipped house map is ground floor only for now.
+- Hit/removal counters are per machine; doors and windows are frames (indestructible) around barricade groups.
 - The shipped house map is ground floor only for now; the second storey and stairs arrive with the vault/stairs stage.
 - Three.js is pinned to 0.160.0 via jsDelivr.

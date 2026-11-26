@@ -3,18 +3,25 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 import { MAPS } from "./maps/index.js";
 
 // Cell types: 1 floor, 2 normal, 3 reinforced, 4 indestructible, 5 barricade, 6 crate/sill
-const COLORS = { 1: 0x2b2f36, 2: 0x9a8f80, 3: 0x6b7a8f, 4: 0x55555d, 5: 0xa0703c, 6: 0xc49a4e };
-// One shared legend: char -> cell types from the floor slab (dy 0) upward. Maps may override with map.legend.
+const COLORS = { 1: 0x2b2f36, 2: 0x9a8f80, 3: 0x6b7a8f, 4: 0x55555d, 5: 0xa0703c, 6: 0xc49a4e, 7: 0x5b4a3a };
+const CS = 0.5;       // metres per cell: walls are one cell (0.5 m) thick and built from many small cells
+const STRIDE = 7;     // grid layers per floor: 1 slab + 6 wall cells (3 m)
+const W6 = t => [1, t, t, t, t, t, t];
+// One shared legend: char -> cell types from the floor slab upward. Maps may override entries with map.legend.
+// Types: 1 floor, 2 normal wall, 3 reinforced (2 hits), 4 indestructible, 5 barricade, 6 crate/sill (vaultable), 7 frame (indestructible)
 export const LEGEND = {
-  "#": [1, 2, 2, 2], R: [1, 3, 3, 3], X: [1, 4, 4, 4], ".": [1], " ": [],
-  D: [1, 5, 5, 5], W: [1, 6, 5, 2], b: [1, 6], S: [1], 1: [1], 2: [1], "^": [1],
+  "#": W6(2), R: W6(3), X: W6(4), F: W6(7), ".": [1], " ": [],
+  D: [1, 5, 5, 5, 5, 7, 7],            // door barricade (2 m high) under a frame header
+  W: [1, 6, 6, 5, 5, 7, 7],            // window: 1 m vaultable sill, 1 m barricade, frame header
+  b: [1, 6, 6],                        // crate, 1 m high
+  S: [1], 1: [1], 2: [1], "^": [1], v: [1], "<": [1], ">": [1],
 };
-const STRIDE = 4; // grid layers per floor: slab + 3 m of wall
+const STAIRS = { "^": [0, 1], v: [0, -1], "<": [1, 0], ">": [-1, 0] };   // offset towards the downhill end
 
 // Logs warnings, never throws.
 export function validate(m) {
   const known = new Set([...Object.keys(LEGEND), ...Object.keys(m.legend || {})]);
-  const n = { 1: 0, 2: 0, S: 0 };
+  const n = { 1: 0, S: 0 };
   m.floors.forEach((rows, f) => rows.forEach((row, z) => {
     if (row.length !== rows[0].length) console.warn(`[map ${m.id}] floor ${f} row ${z}: length ${row.length}, expected ${rows[0].length}`);
     for (const ch of row) {
@@ -22,9 +29,8 @@ export function validate(m) {
       if (ch in n) n[ch]++;
     }
   }));
-  if (!n[1]) console.warn(`[map ${m.id}] missing spawn 1`);
-  if (!n[2]) console.warn(`[map ${m.id}] missing spawn 2`);
-  if (!n.S) console.warn(`[map ${m.id}] missing bomb site S`);
+  if (!n[1]) console.warn(`[map ${m.id}] missing attacker spawn 1 (outside)`);
+  if (!n.S) console.warn(`[map ${m.id}] missing bomb room marker S`);
 }
 MAPS.forEach(validate);
 
@@ -34,22 +40,24 @@ function buildGrid(map, scene) {
   const D = Math.max(...map.floors.map(f => f.length));
   const L = STRIDE * map.floors.length + 1;
   const t = new Uint8Array(W * D * L);
-  const spawn = {}, site = [], cells = [];
+  const spawn = [], sites = [], cells = [], at = (x, y, z) => [(x + 0.5) * CS, y * CS, (z + 0.5) * CS];
   map.floors.forEach((rows, f) => rows.forEach((row, z) => [...row].forEach((ch, x) => {
-    const col = (map.legend && map.legend[ch]) || LEGEND[ch] || [];
+    let col = (map.legend && map.legend[ch]) || LEGEND[ch] || [];
+    const dn = STAIRS[ch];                           // stairs: height = run length from the downhill end
+    if (dn) { let k = 1; while ((rows[z + dn[1] * k] || "")[x + dn[0] * k] === ch) k++; col = [1, ...Array(k).fill(4)]; }
     col.forEach((type, dy) => {
       const y = f * STRIDE + dy;
       t[x + z * W + y * W * D] = type;
       cells.push([x, y, z, type]);
     });
-    if (ch === "1" || ch === "2") spawn[ch] = [x + 0.5, f * STRIDE + 1, z + 0.5];
-    if (ch === "S") site.push([x, f * STRIDE + 1, z]);
+    if (ch === "1") spawn.push(at(x, f * STRIDE + 1, z));
+    if (ch === "S") sites.push(at(x, f * STRIDE + 1, z));
   })));
 
-  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), cells.length);
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(CS, CS, CS), new THREE.MeshBasicMaterial(), cells.length);
   const m4 = new THREE.Matrix4(), c = new THREE.Color();
   cells.forEach(([x, y, z, type], i) => {
-    mesh.setMatrixAt(i, m4.setPosition(x + 0.5, y + 0.5, z + 0.5));
+    mesh.setMatrixAt(i, m4.setPosition((x + 0.5) * CS, (y + 0.5) * CS, (z + 0.5) * CS));
     mesh.setColorAt(i, c.setHex(COLORS[type]).multiplyScalar(0.88 + Math.random() * 0.24)); // small random variation
   });
   mesh.frustumCulled = false;
@@ -87,25 +95,22 @@ function buildGrid(map, scene) {
   function reset() {                                 // restore the original map
     t.set(t0); hp.fill(0); t.forEach((v, i) => { if (v === 3) hp[i] = 2; });
     groups.forEach(g => { g.broke = 0; g.knife = 0; });
-    cells.forEach(([x, y, z], i) => mesh.setMatrixAt(i, m4.setPosition(x + 0.5, y + 0.5, z + 0.5)));
+    cells.forEach(([x, y, z], i) => mesh.setMatrixAt(i, m4.setPosition((x + 0.5) * CS, (y + 0.5) * CS, (z + 0.5) * CS)));
     mesh.instanceMatrix.needsUpdate = true;
   }
   reset();
 
-  const solid = (x, y, z) => {
-    x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
-    if (x < 0 || z < 0 || x >= W || z >= D || y < 0) return true;
-    if (y >= L) return false;
-    return t[x + z * W + y * W * D] !== 0;
-  };
-  return { W, D, L, t, spawn, site, mesh, solid, dmg, drop, reset };
+  const ci = (x, y, z) => (x < 0 || z < 0 || y < 0 || x >= W || z >= D || y >= L ? -1 : x + z * W + y * W * D);
+  const solidC = (x, y, z) => (x < 0 || z < 0 || y < 0 || x >= W || z >= D ? true : y >= L ? false : t[x + z * W + y * W * D] !== 0);
+  const solid = (x, y, z) => solidC(Math.floor(x / CS), Math.floor(y / CS), Math.floor(z / CS));   // metres
+  return { W, D, L, t, spawn, sites, mesh, ci, solidC, solid, dmg, drop, reset };
 }
 
 const R = 0.3;                      // player half-width
 const H = [1.8, 1.2, 0.6];         // hitbox height: stand, crouch, prone
 const EYE = [1.65, 1.1, 0.5];      // eye height per stance
 const SPD = [4.5, 2.5, 1.2];       // walk speed per stance (m/s)
-const SPRINT = 7, GRAVITY = 18, JUMP = 6.2, SENS = 0.002, ROUND_TIME = 120, WIN_ROUNDS = 5;
+const SPRINT = 7, GRAVITY = 18, JUMP = 5.5, SENS = 0.002, ROUND_TIME = 120, WIN_ROUNDS = 5;
 // One data table; add a row to add a weapon. wall = cells removed per hit.
 export const WEAPONS = [
   { n: "Pistol",   dmg: 25, rate: 5,   auto: false, mag: 12, reload: 1.2, spread: 0.012, recoil: 0.012, range: 60,  hs: 2,   wall: 1, zoom: 1.2 },
@@ -133,15 +138,16 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix();
   });
 
-  const [sx, sy, sz] = G.spawn[role === "admin" ? 1 : 2] || [1.5, 1, 1.5];
-  const p = { x: sx, y: sy, z: sz, vy: 0, yaw: 0, pitch: 0, stance: 0, eye: EYE[0], sprint: false, onGround: false, vault: null };
+  const [sx, sy, sz] = G.spawn[0] || [1.5, 0.5, 1.5];
+  const p = { x: sx, y: sy, z: sz, vy: 0, yaw: 0, pitch: 0, stance: 0, eye: EYE[0], sprint: false, onGround: false, vault: null, vis: 0 };
 
   // True if a player-sized box at p (with height h) overlaps any solid cell.
   const hit = (h) => {
-    for (let x = Math.floor(p.x - R); x <= Math.floor(p.x + R - 1e-4); x++)
-      for (let z = Math.floor(p.z - R); z <= Math.floor(p.z + R - 1e-4); z++)
-        for (let y = Math.floor(p.y); y <= Math.floor(p.y + h - 1e-4); y++)
-          if (G.solid(x, y, z)) return true;
+    const x1 = Math.floor((p.x + R - 1e-4) / CS), z1 = Math.floor((p.z + R - 1e-4) / CS), y1 = Math.floor((p.y + h - 1e-4) / CS);
+    for (let x = Math.floor((p.x - R) / CS); x <= x1; x++)
+      for (let z = Math.floor((p.z - R) / CS); z <= z1; z++)
+        for (let y = Math.floor(p.y / CS); y <= y1; y++)
+          if (G.solidC(x, y, z)) return true;
     return false;
   };
   const setStance = (s) => { if (s === p.stance || hit(H[s])) return false; p.stance = s; return true; };
@@ -167,15 +173,15 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   addEventListener("keyup", e => { keys[e.code] = false; });
   addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
-  // Vault: Space next to a 1-cell-high crate/sill (type 6) with free space above and a free landing spot.
+  // Vault: Space at a 1 m high crate/sill (two type-6 cells) with free space above and a free landing spot.
   const VAULT_TIME = 0.45;
-  const cellType = (x, y, z) => (x < 0 || z < 0 || x >= G.W || z >= G.D ? 0 : G.t[x + z * G.W + y * G.W * G.D]);
   function tryVault() {
     if (p.vault || !p.onGround || p.stance === 2 || !S.live) return;
     const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
-    const ax = Math.floor(p.x + fx * 0.7), az = Math.floor(p.z + fz * 0.7), fy = Math.floor(p.y);
-    if (cellType(ax, fy, az) !== 6 || G.solid(ax, fy + 1, az) || G.solid(ax, fy + 2, az)) return;
-    const x0 = p.x, z0 = p.z, x1 = x0 + fx * 1.5, z1 = z0 + fz * 1.5;
+    const cx = Math.floor((p.x + fx * 0.7) / CS), cz = Math.floor((p.z + fz * 0.7) / CS), cy = Math.floor(p.y / CS);
+    const ty = k => G.t[G.ci(cx, cy + k, cz)];
+    if (ty(0) !== 6 || ty(1) !== 6 || G.solidC(cx, cy + 2, cz) || G.solidC(cx, cy + 3, cz)) return;
+    const x0 = p.x, z0 = p.z, x1 = x0 + fx * 1.7, z1 = z0 + fz * 1.7;
     p.x = x1; p.z = z1;
     const blocked = hit(H[0]);                 // landing must fit a standing body
     p.x = x0; p.z = z0;
@@ -192,6 +198,14 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     if (k >= 1) p.vault = null;
   }
 
+  // Move along one axis; if blocked while grounded, try stepping up one cell (this is how stairs work).
+  function slide(dx, dz) {
+    p.x += dx; p.z += dz;
+    if (!hit(H[p.stance])) return;
+    if (p.onGround) { p.y += CS; if (!hit(H[p.stance])) { p.vis -= CS; return; } p.y -= CS; }
+    p.x -= dx; p.z -= dz;
+  }
+
   function walk(dt) {
     const lv = S.live ? 1 : 0, mx = lv * ((keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0)), mz = lv * ((keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0));
     const moving = mx || mz; S.mv = moving ? 1 : 0;
@@ -206,8 +220,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     const step = (p.sprint ? SPRINT : SPD[p.stance]) * (S.ads ? 0.6 : 1) * dt;
     const dx = (mx * c + mz * s) / l * step + S.kx * dt, dz = (-mx * s + mz * c) / l * step + S.kz * dt;
     S.kx *= 1 - dt * 4; S.kz *= 1 - dt * 4;      // grenade knockback decays
-    p.x += dx; if (hit(H[p.stance])) p.x -= dx;   // axes resolved separately so walls slide
-    p.z += dz; if (hit(H[p.stance])) p.z -= dz;
+    slide(dx, 0); slide(0, dz);                  // axes resolved separately so walls slide
 
     if (S.live && keys.Space && p.onGround && p.stance === 0) p.vy = JUMP;
     p.vy -= GRAVITY * dt;
@@ -243,7 +256,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   mk(0.07, 0.09, 0.4, 0x333840, gun, 0.2, -0.2, -0.5); mk(0.035, 0.035, 0.25, 0x1c1f24, gun, 0.2, -0.17, -0.8); mk(0.02, 0.03, 0.03, 0x999999, gun, 0.2, -0.14, -0.45);
   const knifeM = hide(mk(0.03, 0.03, 0.4, 0xbbbbbb, cam, 0.1, -0.15, -0.5));
   const flash = hide(mk(0.12, 0.12, 0.12, 0xffee55)), boomM = hide(mk(3, 3, 3, 0xff7a22)), bombM = hide(mk(0.4, 0.25, 0.4, 0xdd2222));
-  const gm = hide(mk(0.15, 0.15, 0.15, 0x2a5a2a)), marker = hide(mk(0.25, 0.25, 0.25, 0xff3030));
+  const gm = hide(mk(0.15, 0.15, 0.15, 0x2a5a2a)), marker = hide(mk(0.25, 0.25, 0.25, 0xff3030)), siteM = mk(0.12, 1.2, 0.12, 0xff3030);
   const rBody = hide(mk(0.6, 1, 0.6, 0xd04040)), rHead = hide(mk(0.3, 0.3, 0.3, 0xf0c8a0));
   const tracers = Array.from({ length: 8 }, () => hide(mk(1, 1, 1, 0xffe28a))), tl = new Float32Array(8);
   const pv = new Float32Array(90), pg = {}, pvGeo = new THREE.BufferGeometry();     // grenade preview: one pre-allocated line
@@ -260,12 +273,12 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   const near = (x, z, r) => Math.hypot(p.x - x, p.z - z) < r;
   const remoteBox = () => [[rp.x - R, rp.y, rp.z - R], [rp.x + R, rp.y + hh(rp), rp.z + R]];
 
-  // DDA grid raycast: [distance, cell index or -1] of the first solid cell, or null
+  // DDA grid raycast (metres in and out): [distance, cell index or -1] of the first solid cell, or null
   function cast(o, d, max) {
-    const c = o.map(Math.floor), st = d.map(a => (a > 0 ? 1 : -1)), td = d.map(a => (a ? Math.abs(1 / a) : 1e9));
-    const tm = d.map((a, i) => (a ? (a > 0 ? c[i] + 1 - o[i] : o[i] - c[i]) * td[i] : 1e9));
-    for (let t = 0; t <= max;) {
-      if (G.solid(c[0], c[1], c[2])) return [t, c[0] >= 0 && c[2] >= 0 && c[0] < G.W && c[2] < G.D && c[1] >= 0 && c[1] < G.L ? c[0] + c[2] * G.W + c[1] * G.W * G.D : -1];
+    const g = o.map(v => v / CS), c = g.map(Math.floor), st = d.map(a => (a > 0 ? 1 : -1)), td = d.map(a => (a ? Math.abs(1 / a) : 1e9));
+    const tm = d.map((a, i) => (a ? (a > 0 ? c[i] + 1 - g[i] : g[i] - c[i]) * td[i] : 1e9));
+    for (let t = 0; t * CS <= max;) {
+      if (G.solidC(c[0], c[1], c[2])) return [t * CS, G.ci(c[0], c[1], c[2])];
       const i = tm[0] < tm[1] ? (tm[0] < tm[2] ? 0 : 2) : (tm[1] < tm[2] ? 1 : 2);
       t = tm[i]; tm[i] += td[i]; c[i] += st[i];
     }
@@ -370,12 +383,12 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   }
   function throwG() { if (S.live && !p.vault && !S.g && S.gren > 0) { S.gren--; S.g = initG({}); } }
   function boom(g) {
-    const rm = [], rad = 2.5;
-    for (let x = Math.floor(g.x - rad); x <= Math.floor(g.x + rad); x++)
-      for (let y = Math.floor(g.y - rad); y <= Math.floor(g.y + rad); y++)
-        for (let z = Math.floor(g.z - rad); z <= Math.floor(g.z + rad); z++)
-          if (x >= 0 && z >= 0 && y >= 0 && x < G.W && z < G.D && y < G.L && Math.hypot(x + 0.5 - g.x, y + 0.5 - g.y, z + 0.5 - g.z) < rad)
-            rm.push(...G.dmg(x + z * G.W + y * G.W * G.D));
+    const rm = [], rad = 1.8, f = v => Math.floor(v / CS);
+    for (let x = f(g.x - rad); x <= f(g.x + rad); x++)
+      for (let y = f(g.y - rad); y <= f(g.y + rad); y++)
+        for (let z = f(g.z - rad); z <= f(g.z + rad); z++)
+          if (G.ci(x, y, z) >= 0 && Math.hypot((x + 0.5) * CS - g.x, (y + 0.5) * CS - g.y, (z + 0.5) * CS - g.z) < rad)
+            rm.push(...G.dmg(G.ci(x, y, z)));
     if (rm.length) send({ t: "cells", i: rm });
     const b = [g.x, g.y, g.z]; showBoom(b); send({ t: "boom", p: b });
     const hurt = (x, y, z) => {
@@ -392,14 +405,21 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     S.hp -= n; S.kx += kx; S.kz += kz;
     if (S.hp <= 0) { S.hp = 0; S.live = false; if (isHost) endRound(2); else send({ t: "died" }); }
   }
-  function beginRound(n, att) {
+  // Each round: the attacker starts outside; the defender starts in a random bomb room (index si, chosen by the host).
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  function beginRound(n, att, si) {
     G.reset();                                       // map restored locally, no cell data is sent
-    Object.assign(S, { round: n, att, hp: 100, gren: 4, g: null, bomb: null, bLeft: 0, rLeft: ROUND_TIME, prog: 0, rel: 0, kx: 0, kz: 0, live: true, aim: false });
-    const [x, y, z] = G.spawn[myId] || [1.5, 1, 1.5];
-    Object.assign(p, { x, y, z, vy: 0, vault: null, stance: 0, eye: EYE[0] });
+    const site = G.sites[si] || G.spawn[0] || [1.5, 0.5, 1.5];
+    Object.assign(S, { round: n, att, site, hp: 100, gren: 4, g: null, bomb: null, bLeft: 0, rLeft: ROUND_TIME, prog: 0, rel: 0, kx: 0, kz: 0, live: true, aim: false });
+    const [x, y, z] = myId === att ? pick(G.spawn) || site : site;
+    Object.assign(p, { x, y, z, vy: 0, vault: null, stance: 0, eye: EYE[0], vis: 0 });
+    siteM.position.set(site[0], site[1] + 0.6, site[2]);
     rp = rt = null; rBody.visible = rHead.visible = bombM.visible = false; note.textContent = "";
   }
-  function startRound() { const n = S.round + 1, att = n % 2 ? 1 : 2; send({ t: "round", n, att }); beginRound(n, att); }
+  function startRound() {
+    const n = S.round + 1, att = n % 2 ? 1 : 2, si = Math.floor(Math.random() * G.sites.length);
+    send({ t: "round", n, att, si }); beginRound(n, att, si);
+  }
   const showEnd = (win, score) => { S.live = false; S.score = score; note.textContent = win === myId ? "Round won" : "Round lost"; };
   const showOver = win => { S.live = false; S.over = true; note.textContent = win === myId ? "You win the match" : "You lose the match"; };
   function endRound(win) {
@@ -425,7 +445,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
       case "dmg": applyDamage(m.n, ...(m.k || [0, 0])); break;
       case "cells": G.drop(m.i); break;
       case "boom": showBoom(m.p); break;
-      case "round": beginRound(m.n, m.att); break;
+      case "round": beginRound(m.n, m.att, m.si); break;
       case "end": showEnd(m.win, m.score); break;
       case "over": showOver(m.win); break;
       case "plant": plant(m.b); break;
@@ -464,7 +484,8 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     S.lean += (lt - S.lean) * Math.min(1, dt * 10);
 
     p.eye += (EYE[p.stance] - p.eye) * Math.min(1, dt * 12);
-    cam.position.set(p.x + rx * S.lean, p.y + p.eye, p.z + rz * S.lean);
+    p.vis *= Math.max(0, 1 - dt * 12);               // smooths the camera after a step-up
+    cam.position.set(p.x + rx * S.lean, p.y + p.vis + p.eye, p.z + rz * S.lean);
     cam.rotation.set(p.pitch, p.yaw, -S.lean * 0.2);
     cam.updateMatrixWorld();
     const fov = 75 / (S.ads ? w.zoom : 1);
@@ -512,8 +533,9 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     }
     let need = 0;                                    // hold F: attacker plants 3 s, defender defuses 5 s
     if (S.live && keys.KeyF && !p.vault) {
-      if (myId === S.att && !S.bomb && G.site.some(c => near(c[0] + 0.5, c[2] + 0.5, 2.2))) need = 3;
-      if (myId !== S.att && S.bomb && near(S.bomb.x, S.bomb.z, 2)) need = 5;
+      const at = (x, y, z, r) => near(x, z, r) && Math.abs(p.y - y) < 1.5;     // same floor
+      if (myId === S.att && !S.bomb && at(S.site[0], S.site[1], S.site[2], 2.2)) need = 3;
+      if (myId !== S.att && S.bomb && at(S.bomb.x, S.bomb.y, S.bomb.z, 2)) need = 5;
     }
     S.prog = need ? S.prog + dt : 0;
     if (need && S.prog >= need) {
@@ -528,9 +550,10 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     }
 
     if (xh) xh.style.width = xh.style.height = 4 + spread(w) * 1300 + "px";
-    const t2 = s => Math.max(0, Math.ceil(s));
+    const t2 = s => Math.max(0, Math.ceil(s)), q = S.site;
+    const sd = q && myId === S.att && !S.bomb ? `  SITE ${Math.round(Math.hypot(q[0] - p.x, q[2] - p.z))}m ${Math.abs(q[0] - p.x) > Math.abs(q[2] - p.z) ? (q[0] > p.x ? "E" : "W") : (q[2] > p.z ? "S" : "N")} floor ${Math.floor(q[1] / (STRIDE * CS)) + 1}` : "";
     hud.textContent = `HP ${S.hp}   ${w.n} ${a.mag}/${isFinite(a.res) ? a.res : "\u221E"}${S.rel ? " (reloading)" : ""}   Grenades ${S.gren}   ${["stand", "crouch", "prone"][p.stance]}${p.sprint ? " sprint" : ""}\n` +
-      `Round ${S.round} ${myId === S.att ? "ATTACK" : "DEFEND"}  Score ${S.score[myId - 1]}-${S.score[2 - myId]}  Time ${t2(S.rLeft)}${S.bomb ? "  BOMB " + t2(S.bLeft) : ""}${need ? "  hold F " + Math.round(S.prog / need * 100) + "%" : ""}`;
+      `Round ${S.round} ${myId === S.att ? "ATTACK" : "DEFEND"}  Score ${S.score[myId - 1]}-${S.score[2 - myId]}  Time ${t2(S.rLeft)}${sd}${S.bomb ? "  BOMB " + t2(S.bLeft) : ""}${need ? "  hold F " + Math.round(S.prog / need * 100) + "%" : ""}`;
   }
 
   if (conn) {
