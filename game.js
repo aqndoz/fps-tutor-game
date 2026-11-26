@@ -3,17 +3,20 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 import { MAPS } from "./maps/index.js";
 
 // Cell types: 1 floor, 2 normal, 3 reinforced, 4 indestructible, 5 barricade, 6 crate/sill
-const COLORS = { 1: 0x2b2f36, 2: 0x9a8f80, 3: 0x6b7a8f, 4: 0x55555d, 5: 0xa0703c, 6: 0xc49a4e, 7: 0x5b4a3a };
-const CS = 0.5;       // metres per cell: walls are one cell (0.5 m) thick and built from many small cells
-const STRIDE = 7;     // grid layers per floor: 1 slab + 6 wall cells (3 m)
-const W6 = t => [1, t, t, t, t, t, t];
+const COLORS = { 1: 0x2b2f36, 2: 0x9a8f80, 3: 0x6b7a8f, 4: 0x55555d, 5: 0xa0703c, 6: 0xc49a4e, 7: 0x5b4a3a, 8: 0x4a3322 };
+const CS = 0.25;      // metres per cell: walls are one cell (0.25 m) thick and built from many small cells
+const STRIDE = 13;    // grid layers per floor: 1 slab + 12 wall cells (3 m)
+const L12 = (...parts) => [1, ...parts.flatMap(([t, n]) => Array(n).fill(t))];   // slab + 12 cells, as [type, count] runs
 // One shared legend: char -> cell types from the floor slab upward. Maps may override entries with map.legend.
-// Types: 1 floor, 2 normal wall, 3 reinforced (2 hits), 4 indestructible, 5 barricade, 6 crate/sill (vaultable), 7 frame (indestructible)
+// Types: 1 floor, 2 normal wall, 3 reinforced (2 hits), 4 indestructible, 5 barricade, 6 crate/sill (vaultable), 7 frame (indestructible), 8 barricade accent
 export const LEGEND = {
-  "#": W6(2), R: W6(3), X: W6(4), F: W6(7), ".": [1], " ": [],
-  D: [1, 5, 5, 5, 5, 7, 7],            // door barricade (2 m high) under a frame header
-  W: [1, 6, 6, 5, 5, 7, 7],            // window: 1 m vaultable sill, 1 m barricade, frame header
-  b: [1, 6, 6],                        // crate, 1 m high
+  "#": L12([2, 12]), R: L12([3, 12]), X: L12([4, 12]), F: L12([7, 12]), ".": [1], " ": [],
+  D: L12([8, 1], [5, 7], [8, 1], [7, 3]),                  // door panel column (2.25 m high) with rails, under a frame header
+  E: L12([8, 9], [7, 3]),                                  // door edge column
+  H: L12([8, 1], [5, 2], [8, 2], [5, 3], [8, 1], [7, 3]),  // door column with the handle
+  W: L12([6, 4], [5, 5], [7, 3]),                          // window: 1 m vaultable sill, 1.25 m barricade, frame header
+  M: L12([6, 4], [8, 5], [7, 3]),                          // window mullion
+  b: [1, 6, 6, 6, 6],                                      // crate, 1 m high
   S: [1], 1: [1], 2: [1], "^": [1], v: [1], "<": [1], ">": [1],
 };
 const STAIRS = { "^": [0, 1], v: [0, -1], "<": [1, 0], ">": [-1, 0] };   // offset towards the downhill end
@@ -29,6 +32,7 @@ export function validate(m) {
       if (ch in n) n[ch]++;
     }
   }));
+  if (m.floors.length < 2) console.warn(`[map ${m.id}] needs a second floor`);
   if (!n[1]) console.warn(`[map ${m.id}] missing attacker spawn 1 (outside)`);
   if (!n.S) console.warn(`[map ${m.id}] missing bomb room marker S`);
 }
@@ -40,7 +44,8 @@ function buildGrid(map, scene) {
   const D = Math.max(...map.floors.map(f => f.length));
   const L = STRIDE * map.floors.length + 1;
   const t = new Uint8Array(W * D * L);
-  const spawn = [], sites = [], cells = [], at = (x, y, z) => [(x + 0.5) * CS, y * CS, (z + 0.5) * CS];
+  let cells = [];
+  const spawn = [], sites = [], at = (x, y, z) => [(x + 0.5) * CS, y * CS, (z + 0.5) * CS];
   map.floors.forEach((rows, f) => rows.forEach((row, z) => [...row].forEach((ch, x) => {
     let col = (map.legend && map.legend[ch]) || LEGEND[ch] || [];
     const dn = STAIRS[ch];                           // stairs: height = run length from the downhill end
@@ -48,11 +53,28 @@ function buildGrid(map, scene) {
     col.forEach((type, dy) => {
       const y = f * STRIDE + dy;
       t[x + z * W + y * W * D] = type;
-      cells.push([x, y, z, type]);
+      if (type !== 1) cells.push([x, y, z, type]);     // floor slabs are drawn separately
     });
     if (ch === "1") spawn.push(at(x, f * STRIDE + 1, z));
     if (ch === "S") sites.push(at(x, f * STRIDE + 1, z));
   })));
+
+  // Skip wall cells that can never be seen (buried in indestructible mass), then draw floors as a few merged boxes.
+  const ind = v => v === 1 || v === 4 || v === 6 || v === 7;
+  const solidI = (x, y, z) => (y >= L ? false : x < 0 || z < 0 || y < 0 || x >= W || z >= D ? true : ind(t[x + z * W + y * W * D]));
+  cells = cells.filter(([x, y, z, type]) => !(ind(type) && solidI(x - 1, y, z) && solidI(x + 1, y, z) && solidI(x, y - 1, z) && solidI(x, y + 1, z) && solidI(x, y, z - 1) && solidI(x, y, z + 1)));
+  const runs = [];
+  for (let f = 0; f < map.floors.length; f++) for (let z = 0; z < D; z++) for (let x = 0, s0 = -1; x <= W; x++) {
+    const on = x < W && t[x + z * W + f * STRIDE * W * D] === 1;
+    if (on && s0 < 0) s0 = x;
+    if (s0 >= 0 && (!on || x - s0 >= 16)) { runs.push([s0, x, f, z]); s0 = on ? x : -1; }
+  }
+  const fm = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), runs.length), fc = new THREE.Color(), f4 = new THREE.Matrix4();
+  runs.forEach(([a, b, f, z], i) => {
+    fm.setMatrixAt(i, f4.makeScale((b - a) * CS, CS, CS).setPosition((a + b) / 2 * CS, (f * STRIDE + 0.5) * CS, (z + 0.5) * CS));
+    fm.setColorAt(i, fc.setHex(COLORS[1]).multiplyScalar(0.9 + Math.random() * 0.2));
+  });
+  fm.frustumCulled = false; scene.add(fm);
 
   const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(CS, CS, CS), new THREE.MeshBasicMaterial(), cells.length);
   const m4 = new THREE.Matrix4(), c = new THREE.Color();
@@ -68,11 +90,11 @@ function buildGrid(map, scene) {
   cells.forEach(([x, y, z], i) => { inst[x + z * W + y * W * D] = i; });
   const grp = new Int16Array(t.length).fill(-1), groups = [];
   t.forEach((v, i) => {
-    if (v !== 5 || grp[i] >= 0) return;
+    if ((v !== 5 && v !== 8) || grp[i] >= 0) return;
     const g = { cells: [], broke: 0, knife: 0 }, q = [i]; grp[i] = groups.length;
     while (q.length) {
       const c = q.pop(); g.cells.push(c);
-      for (const n of [c - 1, c + 1, c - W, c + W, c - W * D, c + W * D]) if (t[n] === 5 && grp[n] < 0) { grp[n] = groups.length; q.push(n); }
+      for (const n of [c - 1, c + 1, c - W, c + W, c - W * D, c + W * D]) if ((t[n] === 5 || t[n] === 8) && grp[n] < 0) { grp[n] = groups.length; q.push(n); }
     }
     groups.push(g);
   });
@@ -80,7 +102,7 @@ function buildGrid(map, scene) {
   // One hit on one cell. Returns the removed cell indices. A barricade goes entirely after 2 knife hits or when >1/3 of it is broken.
   function dmg(i, knife) {
     const type = t[i], out = [];
-    if (type !== 2 && type !== 3 && type !== 5) return out;
+    if (type !== 2 && type !== 3 && type !== 5 && type !== 8) return out;
     if (type === 3 && --hp[i] > 0) return out;
     rm1(i, out);
     const g = grp[i] >= 0 && groups[grp[i]];
@@ -115,9 +137,9 @@ const SPRINT = 7, GRAVITY = 18, JUMP = 5.5, SENS = 0.002, ROUND_TIME = 120, WIN_
 export const WEAPONS = [
   { n: "Pistol",   dmg: 25, rate: 5,   auto: false, mag: 12, reload: 1.2, spread: 0.012, recoil: 0.012, range: 60,  hs: 2,   wall: 1, zoom: 1.2 },
   { n: "SMG",      dmg: 17, rate: 14,  auto: true,  mag: 30, reload: 1.6, spread: 0.022, recoil: 0.007, range: 50,  hs: 1.8, wall: 1, zoom: 1.2 },
-  { n: "Rifle",    dmg: 28, rate: 9,   auto: true,  mag: 30, reload: 2.0, spread: 0.016, recoil: 0.012, range: 100, hs: 2,   wall: 1, zoom: 1.5 },
-  { n: "Shotgun",  dmg: 12, rate: 1.2, auto: false, mag: 6,  reload: 2.4, spread: 0.06,  recoil: 0.04,  range: 25,  hs: 1.5, wall: 2, zoom: 1.2, pellets: 8 },
-  { n: "Marksman", dmg: 70, rate: 1.6, auto: false, mag: 8,  reload: 2.2, spread: 0.003, recoil: 0.05,  range: 150, hs: 2,   wall: 2, zoom: 2.5 },
+  { n: "Rifle",    dmg: 28, rate: 9,   auto: true,  mag: 30, reload: 2.0, spread: 0.016, recoil: 0.012, range: 100, hs: 2,   wall: 2, zoom: 1.5 },
+  { n: "Shotgun",  dmg: 12, rate: 1.2, auto: false, mag: 6,  reload: 2.4, spread: 0.06,  recoil: 0.04,  range: 25,  hs: 1.5, wall: 3, zoom: 1.2, pellets: 8 },
+  { n: "Marksman", dmg: 70, rate: 1.6, auto: false, mag: 8,  reload: 2.2, spread: 0.003, recoil: 0.05,  range: 150, hs: 2,   wall: 4, zoom: 2.5 },
 ];
 
 export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
@@ -173,14 +195,15 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   addEventListener("keyup", e => { keys[e.code] = false; });
   addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
-  // Vault: Space at a 1 m high crate/sill (two type-6 cells) with free space above and a free landing spot.
+  // Vault: Space at a 1 m high crate/sill (type-6 cells) with free space above and a free landing spot.
   const VAULT_TIME = 0.45;
   function tryVault() {
     if (p.vault || !p.onGround || p.stance === 2 || !S.live) return;
     const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
     const cx = Math.floor((p.x + fx * 0.7) / CS), cz = Math.floor((p.z + fz * 0.7) / CS), cy = Math.floor(p.y / CS);
-    const ty = k => G.t[G.ci(cx, cy + k, cz)];
-    if (ty(0) !== 6 || ty(1) !== 6 || G.solidC(cx, cy + 2, cz) || G.solidC(cx, cy + 3, cz)) return;
+    const ty = k => G.t[G.ci(cx, cy + k, cz)], CH = Math.round(1 / CS);     // a vaultable object is exactly 1 m high
+    for (let k = 0; k < CH; k++) if (ty(k) !== 6) return;
+    if (G.solidC(cx, cy + CH, cz) || G.solidC(cx, cy + CH + 1, cz)) return;
     const x0 = p.x, z0 = p.z, x1 = x0 + fx * 1.7, z1 = z0 + fz * 1.7;
     p.x = x1; p.z = z1;
     const blocked = hit(H[0]);                 // landing must fit a standing body
@@ -234,7 +257,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   const isHost = role === "admin", myId = isHost ? 1 : 2, TAU = Math.PI * 2;
   const r1 = v => Math.round(v * 10) / 10, r10 = v => Math.round(v * 10);
   const S = { w: 0, rel: 0, next: 0, ads: false, lean: 0, hp: 100, gren: 4, live: false, kx: 0, kz: 0, heat: 0, mv: 0, knifeAt: 0, swing: 0,
-    g: null, aim: false, round: 0, att: 1, score: [0, 0], rLeft: 0, bLeft: 0, bomb: null, prog: 0, ending: false, over: false, snd: 0, fs: 0 };
+    g: null, aim: false, round: 0, att: 1, score: [0, 0], rLeft: 0, bLeft: 0, bomb: null, prog: 0, ending: false, over: false, snd: 0, fs: 0, ph: 0 };
   const ammo = WEAPONS.map(w => ({ mag: w.mag, res: isHost ? Infinity : 2 * w.mag }));
   const mouse = [false, false, false];
   const send = m => { if (conn && conn.open) conn.send(m); };
@@ -254,10 +277,19 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   scene.add(cam);
   const gun = new THREE.Group(); cam.add(gun);
   mk(0.07, 0.09, 0.4, 0x333840, gun, 0.2, -0.2, -0.5); mk(0.035, 0.035, 0.25, 0x1c1f24, gun, 0.2, -0.17, -0.8); mk(0.02, 0.03, 0.03, 0x999999, gun, 0.2, -0.14, -0.45);
+  mk(0.08, 0.08, 0.35, 0x3a3f48, gun, 0.27, -0.28, -0.25); mk(0.07, 0.07, 0.1, 0xf0c8a0, gun, 0.21, -0.25, -0.42);   // right arm, hand on the grip
+  mk(0.08, 0.08, 0.35, 0x3a3f48, gun, 0.05, -0.28, -0.4); mk(0.07, 0.07, 0.1, 0xf0c8a0, gun, 0.16, -0.2, -0.68);     // left arm, hand on the barrel
   const knifeM = hide(mk(0.03, 0.03, 0.4, 0xbbbbbb, cam, 0.1, -0.15, -0.5));
   const flash = hide(mk(0.12, 0.12, 0.12, 0xffee55)), boomM = hide(mk(3, 3, 3, 0xff7a22)), bombM = hide(mk(0.4, 0.25, 0.4, 0xdd2222));
   const gm = hide(mk(0.15, 0.15, 0.15, 0x2a5a2a)), marker = hide(mk(0.25, 0.25, 0.25, 0xff3030)), siteM = mk(0.12, 1.2, 0.12, 0xff3030);
-  const rBody = hide(mk(0.6, 1, 0.6, 0xd04040)), rHead = hide(mk(0.3, 0.3, 0.3, 0xf0c8a0));
+  // Remote player: a box rig (legs swing, head pitches, helmet, vest, arms holding a gun)
+  const rig = new THREE.Group(); rig.rotation.order = "YXZ"; rig.visible = false; scene.add(rig);
+  const part = (w, h, d, col, x, y, z, dy = 0) => { const g = new THREE.Group(); g.position.set(x, y, z); rig.add(g); mk(w, h, d, col, g, 0, dy, 0); return g; };
+  const legL = part(0.17, 0.8, 0.2, 0x2f3a4a, -0.12, 0.85, 0, -0.4), legR = part(0.17, 0.8, 0.2, 0x2f3a4a, 0.12, 0.85, 0, -0.4);
+  part(0.5, 0.6, 0.28, 0xb03a3a, 0, 1.15, 0); part(0.52, 0.12, 0.3, 0x3a3f48, 0, 0.88, 0);            // vest, belt
+  const head = part(0.26, 0.26, 0.26, 0xf0c8a0, 0, 1.6, 0);
+  mk(0.3, 0.12, 0.3, 0x2a2e36, head, 0, 0.14, 0); mk(0.2, 0.06, 0.04, 0x1a1a1a, head, 0, 0.02, -0.14);  // helmet, visor
+  part(0.12, 0.12, 0.45, 0x3a3f48, 0.2, 1.3, -0.25); part(0.12, 0.12, 0.35, 0x3a3f48, -0.15, 1.3, -0.25); part(0.07, 0.1, 0.55, 0x222222, 0.1, 1.32, -0.45);  // arms, gun
   const tracers = Array.from({ length: 8 }, () => hide(mk(1, 1, 1, 0xffe28a))), tl = new Float32Array(8);
   const pv = new Float32Array(90), pg = {}, pvGeo = new THREE.BufferGeometry();     // grenade preview: one pre-allocated line
   pvGeo.setAttribute("position", new THREE.BufferAttribute(pv, 3));
@@ -414,7 +446,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     const [x, y, z] = myId === att ? pick(G.spawn) || site : site;
     Object.assign(p, { x, y, z, vy: 0, vault: null, stance: 0, eye: EYE[0], vis: 0 });
     siteM.position.set(site[0], site[1] + 0.6, site[2]);
-    rp = rt = null; rBody.visible = rHead.visible = bombM.visible = false; note.textContent = "";
+    rp = rt = null; rig.visible = bombM.visible = false; note.textContent = "";
   }
   function startRound() {
     const n = S.round + 1, att = n % 2 ? 1 : 2, si = Math.floor(Math.random() * G.sites.length);
@@ -519,11 +551,12 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
       const kk = Math.min(1, dt * 12), ox = rp.x, oz = rp.z;
       rp.x += (rt.x - rp.x) * kk; rp.y += (rt.y - rp.y) * kk; rp.z += (rt.z - rp.z) * kk;
       rp.yaw += Math.atan2(Math.sin(rt.yaw - rp.yaw), Math.cos(rt.yaw - rp.yaw)) * kk;
-      rp.st = rt.st; rp.vault = rt.vault;
-      const h = hh(rp);
-      rBody.visible = rHead.visible = true;
-      rBody.position.set(rp.x, rp.y + h / 2, rp.z); rBody.scale.y = h; rBody.rotation.y = rp.yaw;
-      rHead.position.set(rp.x, rp.y + h - 0.15, rp.z);
+      rp.st = rt.st; rp.vault = rt.vault; rp.pitch = rt.pitch;
+      const mv = Math.hypot(rp.x - ox, rp.z - oz), sp = Math.min(1, mv / dt / 2);
+      S.ph += mv * 4; legL.rotation.x = Math.sin(S.ph) * 0.7 * sp; legR.rotation.x = -legL.rotation.x;
+      rig.visible = true; rig.position.set(rp.x, rp.y + (rp.st === 2 ? 0.15 : 0), rp.z); rig.rotation.set(0, rp.yaw, 0); rig.scale.y = 1;
+      if (rp.st === 2) { rig.rotation.x = -Math.PI / 2; rig.scale.y = 0.45; } else if (rp.st === 1 || rp.vault) rig.scale.y = H[1] / H[0];
+      head.rotation.x = rp.pitch;
       if (rp.st === 0 && !rp.vault && S.live) { S.fs += Math.hypot(rp.x - ox, rp.z - oz); if (S.fs >= 2) { S.fs = 0; pulse(); } }
     }
 

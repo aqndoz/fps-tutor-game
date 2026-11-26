@@ -20,8 +20,8 @@ Push all files to a repo, then Settings > Pages > deploy from the main branch, r
 1. Copy `maps/_template.js` to `maps/mymap.js` and draw your map (the legend is in the file).
 2. Add `import mymap from "./mymap.js";` to `maps/index.js`.
 3. Add `mymap` to the `MAPS` array there. It appears in the admin dropdown automatically.
-Every character is a 0.5 m cell, so walls are thin and made of many small cells. Each round the attacker starts at a `1` outside; the defender starts in a random room marked with `S` and the attacker must plant there. Stairs are runs of `^ v < >` (6 in a row = one floor; the floor above needs a void over them).
-The validator logs a `console.warn` for a missing `1` or `S`, uneven rows or unknown characters.
+Every character is a 0.25 m cell, so walls are thin and made of many small cells. Every map needs two floors. Each round the attacker starts at a `1` outside the building; the defender starts in a random room marked with `S` and the attacker must plant there. Stairs are runs of `^ v < >` (12 in a row = one floor; the floor above needs a void over them).
+The validator logs a `console.warn` for a single-floor map, a missing `1` or `S`, uneven rows or unknown characters.
 
 ## Notes
 - PeerJS uses its free public signalling server and Google STUN; very strict networks may need a TURN server.
