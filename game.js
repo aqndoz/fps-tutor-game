@@ -131,8 +131,8 @@ function buildGrid(map, scene) {
 const R = 0.3;                      // player half-width
 const H = [1.8, 1.2, 0.6];         // hitbox height: stand, crouch, prone
 const EYE = [1.65, 1.1, 0.5];      // eye height per stance
-const SPD = [4.5, 2.5, 1.2];       // walk speed per stance (m/s)
-const SPRINT = 7, GRAVITY = 18, JUMP = 5.5, SENS = 0.002, ROUND_TIME = 120, WIN_ROUNDS = 5;
+const SPD = [3, 1.7, 0.8];       // walk speed per stance (m/s)
+const SPRINT = 4.7, GRAVITY = 18, VH = 0.8, SENS = 0.002, ROUND_TIME = 120, WIN_ROUNDS = 5;
 // One data table; add a row to add a weapon. wall = cells removed per hit.
 export const WEAPONS = [
   { n: "Pistol",   dmg: 25, rate: 5,   auto: false, mag: 12, reload: 1.2, spread: 0.012, recoil: 0.012, range: 60,  hs: 2,   wall: 1, zoom: 1.2 },
@@ -142,7 +142,7 @@ export const WEAPONS = [
   { n: "Marksman", dmg: 70, rate: 1.6, auto: false, mag: 8,  reload: 2.2, spread: 0.003, recoil: 0.05,  range: 150, hs: 2,   wall: 4, zoom: 2.5 },
 ];
 
-export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
+export function startGame({ role = "guest", conn = null, mapId = null, quiz = null } = {}) {
   const id = mapId || new URLSearchParams(location.search).get("map");   // ?map=id for quick testing
   const map = MAPS.find(m => m.id === id) || MAPS[0];
 
@@ -185,6 +185,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     p.pitch = Math.max(-1.55, Math.min(1.55, p.pitch - e.movementY * SENS));
   });
   addEventListener("keydown", e => {
+    if (e.target.tagName === "INPUT") return;            // typing an answer
     keys[e.code] = true;
     if (e.code === "Space") e.preventDefault();
     if (e.repeat) return;
@@ -195,21 +196,26 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   addEventListener("keyup", e => { keys[e.code] = false; });
   addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
-  // Vault: Space at a 1 m high crate/sill (type-6 cells) with free space above and a free landing spot.
-  const VAULT_TIME = 0.45;
+  // Vault (Space) replaces jumping: it only works at a 1 m high crate or sill (type-6 cells) with free space above and a free landing spot.
+  const VAULT_TIME = 0.45, CH = Math.round(1 / CS);        // CH = cells per metre
   function tryVault() {
     if (p.vault || !p.onGround || p.stance === 2 || !S.live) return;
-    const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
-    const cx = Math.floor((p.x + fx * 0.7) / CS), cz = Math.floor((p.z + fz * 0.7) / CS), cy = Math.floor(p.y / CS);
-    const ty = k => G.t[G.ci(cx, cy + k, cz)], CH = Math.round(1 / CS);     // a vaultable object is exactly 1 m high
-    for (let k = 0; k < CH; k++) if (ty(k) !== 6) return;
-    if (G.solidC(cx, cy + CH, cz) || G.solidC(cx, cy + CH + 1, cz)) return;
-    const x0 = p.x, z0 = p.z, x1 = x0 + fx * 1.7, z1 = z0 + fz * 1.7;
+    const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw), cy = Math.floor(p.y / CS);
+    const ok = d => {                                      // is there a vaultable object with a clear top d metres ahead?
+      const cx = Math.floor((p.x + fx * d) / CS), cz = Math.floor((p.z + fz * d) / CS);
+      for (let k = 0; k < CH; k++) if (G.t[G.ci(cx, cy + k, cz)] !== 6) return false;
+      return !G.solidC(cx, cy + CH, cz) && !G.solidC(cx, cy + CH + 1, cz);
+    };
+    let d = 0.3; while (d <= 1 && !ok(d)) d += 0.1;
+    if (d > 1) return;                                     // nothing to vault over
+    let e = d; while (e < 2.5 && ok(e)) e += 0.1;           // find the far edge and land just past it
+    if (e >= 2.5) return;
+    const x0 = p.x, z0 = p.z, x1 = x0 + fx * (e + 0.45), z1 = z0 + fz * (e + 0.45);
     p.x = x1; p.z = z1;
-    const blocked = hit(H[0]);                 // landing must fit a standing body
+    const blocked = hit(H[0]);                             // landing must fit a standing body
     p.x = x0; p.z = z0;
-    if (blocked) return;                       // fall back to a normal jump
-    p.stance = 0;
+    if (blocked) return;
+    p.stance = 0; S.leanT = 0;
     p.vault = { t: 0, x0, z0, x1, z1, y: p.y };
   }
   function vaultStep(dt) {                     // scripted move, no collision; the player can still look around
@@ -245,7 +251,6 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     S.kx *= 1 - dt * 4; S.kz *= 1 - dt * 4;      // grenade knockback decays
     slide(dx, 0); slide(0, dz);                  // axes resolved separately so walls slide
 
-    if (S.live && keys.Space && p.onGround && p.stance === 0) p.vy = JUMP;
     p.vy -= GRAVITY * dt;
     p.y += p.vy * dt;
     if (hit(H[p.stance])) { p.y -= p.vy * dt; p.onGround = p.vy < 0; p.vy = 0; } else p.onGround = false;
@@ -257,7 +262,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   const isHost = role === "admin", myId = isHost ? 1 : 2, TAU = Math.PI * 2;
   const r1 = v => Math.round(v * 10) / 10, r10 = v => Math.round(v * 10);
   const S = { w: 0, rel: 0, next: 0, ads: false, lean: 0, hp: 100, gren: 4, live: false, kx: 0, kz: 0, heat: 0, mv: 0, knifeAt: 0, swing: 0,
-    g: null, aim: false, round: 0, att: 1, score: [0, 0], rLeft: 0, bLeft: 0, bomb: null, prog: 0, ending: false, over: false, snd: 0, fs: 0, ph: 0 };
+    g: null, aim: false, round: 0, att: 1, score: [0, 0], rLeft: 0, bLeft: 0, bomb: null, prog: 0, ending: false, over: false, snd: 0, fs: 0, ph: 0, leanT: 0, mt: 0, nq: 0, qLeft: [], qi: 0, qT: 0, qKind: false };
   const ammo = WEAPONS.map(w => ({ mag: w.mag, res: isHost ? Infinity : 2 * w.mag }));
   const mouse = [false, false, false];
   const send = m => { if (conn && conn.open) conn.send(m); };
@@ -274,14 +279,16 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     m.position.set(x, y, z); par.add(m); return m;
   };
   const hide = m => { m.visible = false; return m; };
+  const see = m => { m.material.depthTest = false; m.renderOrder = 10; return m; };       // drawn through walls
   scene.add(cam);
   const gun = new THREE.Group(); cam.add(gun);
   mk(0.07, 0.09, 0.4, 0x333840, gun, 0.2, -0.2, -0.5); mk(0.035, 0.035, 0.25, 0x1c1f24, gun, 0.2, -0.17, -0.8); mk(0.02, 0.03, 0.03, 0x999999, gun, 0.2, -0.14, -0.45);
   mk(0.08, 0.08, 0.35, 0x3a3f48, gun, 0.27, -0.28, -0.25); mk(0.07, 0.07, 0.1, 0xf0c8a0, gun, 0.21, -0.25, -0.42);   // right arm, hand on the grip
   mk(0.08, 0.08, 0.35, 0x3a3f48, gun, 0.05, -0.28, -0.4); mk(0.07, 0.07, 0.1, 0xf0c8a0, gun, 0.16, -0.2, -0.68);     // left arm, hand on the barrel
   const knifeM = hide(mk(0.03, 0.03, 0.4, 0xbbbbbb, cam, 0.1, -0.15, -0.5));
-  const flash = hide(mk(0.12, 0.12, 0.12, 0xffee55)), boomM = hide(mk(3, 3, 3, 0xff7a22)), bombM = hide(mk(0.4, 0.25, 0.4, 0xdd2222));
-  const gm = hide(mk(0.15, 0.15, 0.15, 0x2a5a2a)), marker = hide(mk(0.25, 0.25, 0.25, 0xff3030)), siteM = mk(0.12, 1.2, 0.12, 0xff3030);
+  const flash = hide(mk(0.12, 0.12, 0.12, 0xffee55)), boomM = hide(mk(3, 3, 3, 0xff7a22)), bombM = see(hide(mk(0.5, 0.5, 0.5, 0xffaa00)));
+  const gm = hide(mk(0.15, 0.15, 0.15, 0x2a5a2a)), marker = hide(mk(0.25, 0.25, 0.25, 0xff3030));
+  const siteM = see(mk(0.15, 3, 0.15, 0xff3030)), siteP = see(mk(2.4, 0.04, 2.4, 0xff3030));   // bomb room: pillar + floor plate
   // Remote player: a box rig (legs swing, head pitches, helmet, vest, arms holding a gun)
   const rig = new THREE.Group(); rig.rotation.order = "YXZ"; rig.visible = false; scene.add(rig);
   const part = (w, h, d, col, x, y, z, dy = 0) => { const g = new THREE.Group(); g.position.set(x, y, z); rig.add(g); mk(w, h, d, col, g, 0, dy, 0); return g; };
@@ -301,7 +308,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   });
 
   const fwd = (yaw, pitch) => [-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)];
-  const hh = r => H[r.vault ? 1 : r.st];
+  const hh = r => (r.vault ? VH : H[r.st]);
   const near = (x, z, r) => Math.hypot(p.x - x, p.z - z) < r;
   const remoteBox = () => [[rp.x - R, rp.y, rp.z - R], [rp.x + R, rp.y + hh(rp), rp.z + R]];
 
@@ -396,13 +403,18 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   const GSTEP = 0.04, GRAV = 14;
   function gstep(g) {
     g.vy -= GRAV * GSTEP;
-    const nx = g.x + g.vx * GSTEP, ny = g.y + g.vy * GSTEP, nz = g.z + g.vz * GSTEP;
-    if (G.solid(nx, ny, nz) || (rp && Math.hypot(nx - rp.x, nz - rp.z) < 0.5 && ny > rp.y && ny < rp.y + hh(rp))) return true;
-    g.x = nx; g.y = ny; g.z = nz; return false;
+    const dx = g.vx * GSTEP, dy = g.vy * GSTEP, dz = g.vz * GSTEP, n = Math.ceil(Math.hypot(dx, dy, dz) / 0.1);   // a sample every <= 10 cm
+    for (let i = 1; i <= n; i++) {
+      const x = g.x + dx * i / n, y = g.y + dy * i / n, z = g.z + dz * i / n;
+      if (G.solid(x, y, z) || (rp && Math.hypot(x - rp.x, z - rp.z) < 0.5 && y > rp.y && y < rp.y + hh(rp))) {
+        g.x += dx * (i - 1) / n; g.y += dy * (i - 1) / n; g.z += dz * (i - 1) / n; return true;
+      }
+    }
+    g.x += dx; g.y += dy; g.z += dz; return false;
   }
   function initG(g) {
     const cp = Math.cos(p.pitch), dx = -Math.sin(p.yaw) * cp, dy = Math.sin(p.pitch), dz = -Math.cos(p.yaw) * cp, c = cam.position;
-    g.x = c.x + dx * 0.5; g.y = c.y + dy * 0.5; g.z = c.z + dz * 0.5; g.vx = dx * 13; g.vy = dy * 13 + 2.5; g.vz = dz * 13; g.acc = 0;
+    g.x = c.x + dx * 0.15; g.y = c.y + dy * 0.15; g.z = c.z + dz * 0.15; g.vx = dx * 13; g.vy = dy * 13 + 2.5; g.vz = dz * 13; g.acc = 0;
     return g;
   }
   function preview() {
@@ -442,15 +454,16 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   function beginRound(n, att, si) {
     G.reset();                                       // map restored locally, no cell data is sent
     const site = G.sites[si] || G.spawn[0] || [1.5, 0.5, 1.5];
-    Object.assign(S, { round: n, att, site, hp: 100, gren: 4, g: null, bomb: null, bLeft: 0, rLeft: ROUND_TIME, prog: 0, rel: 0, kx: 0, kz: 0, live: true, aim: false });
+    Object.assign(S, { round: n, att, site, hp: 100, leanT: 0, gren: 4, g: null, bomb: null, bLeft: 0, rLeft: ROUND_TIME, prog: 0, rel: 0, kx: 0, kz: 0, live: true, aim: false });
     const [x, y, z] = myId === att ? pick(G.spawn) || site : site;
     Object.assign(p, { x, y, z, vy: 0, vault: null, stance: 0, eye: EYE[0], vis: 0 });
-    siteM.position.set(site[0], site[1] + 0.6, site[2]);
+    siteM.position.set(site[0], site[1] + 1.5, site[2]); siteP.position.set(site[0], site[1] + 0.03, site[2]);
     rp = rt = null; rig.visible = bombM.visible = false; note.textContent = "";
   }
   function startRound() {
     const n = S.round + 1, att = n % 2 ? 1 : 2, si = Math.floor(Math.random() * G.sites.length);
-    send({ t: "round", n, att, si }); beginRound(n, att, si);
+    send({ t: "round", n, att, si, g: quizOn ? 1 : 0 }); beginRound(n, att, si);
+    if (quizOn) ask();                               // the guest must answer before every spawn
   }
   const showEnd = (win, score) => { S.live = false; S.score = score; note.textContent = win === myId ? "Round won" : "Round lost"; };
   const showOver = win => { S.live = false; S.over = true; note.textContent = win === myId ? "You win the match" : "You lose the match"; };
@@ -465,6 +478,28 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
   function plant(b) { S.bomb = b; S.bLeft = 30; bombM.position.set(b.x, b.y + 0.15, b.z); bombM.visible = true; }
   function defused() { S.bomb = null; bombM.visible = false; if (isHost) endRound(3 - S.att); }
 
+  // Question gate (guest only): the host picks and checks, the guest types the answer. Correct = +3 magazines of reserve per weapon.
+  const quizOn = isHost && !!conn && !!quiz && quiz.qs.length > 0;
+  const qbox = document.createElement("div");
+  qbox.style.cssText = "position:fixed;inset:0;z-index:5;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:#000d;color:#fff;font:18px monospace;text-align:center";
+  qbox.innerHTML = '<div style="max-width:70%"></div><input autocomplete="off" style="font:18px monospace;width:50%"><div></div>';
+  document.body.appendChild(qbox);
+  const [qtxt, qin, qsec] = qbox.children;
+  qin.addEventListener("keydown", e => { if (e.key === "Enter" && qin.value.trim()) { send({ t: "a", a: qin.value }); qin.value = ""; } });
+  function nextQ() {                                 // random question, no repeats until the pool is used up
+    if (!S.qLeft.length) S.qLeft = quiz.qs.map((_, i) => i);
+    S.qi = S.qLeft.splice(Math.floor(Math.random() * S.qLeft.length), 1)[0]; S.qT = quiz.limit;
+    send({ t: "q", q: quiz.qs[S.qi].q, sec: quiz.limit });
+  }
+  function ask() { S.qKind = true; S.live = false; nextQ(); }      // pauses the host; the guest pauses when the question arrives
+  function checkAnswer(a) {
+    if (!S.qKind) return;
+    if (quiz.qs[S.qi].a.some(x => x.trim().toLowerCase() === String(a).trim().toLowerCase())) { S.qKind = false; S.live = true; send({ t: "qok" }); }
+    else nextQ();                                    // wrong answer: a new question
+  }
+  const showQ = (q, sec) => { S.live = false; S.aim = false; document.exitPointerLock(); qtxt.textContent = q; qin.value = ""; S.qT = sec; qbox.style.display = "flex"; qin.focus(); };
+  const answered = () => { qbox.style.display = "none"; S.live = true; ammo.forEach((a, i) => { a.res += 3 * WEAPONS[i].mag; }); };
+
   // Network messages
   function onMsg(m) {
     switch (m.t) {
@@ -477,12 +512,15 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
       case "dmg": applyDamage(m.n, ...(m.k || [0, 0])); break;
       case "cells": G.drop(m.i); break;
       case "boom": showBoom(m.p); break;
-      case "round": beginRound(m.n, m.att, m.si); break;
+      case "round": beginRound(m.n, m.att, m.si); if (m.g) S.live = false; break;
       case "end": showEnd(m.win, m.score); break;
       case "over": showOver(m.win); break;
       case "plant": plant(m.b); break;
       case "defuse": defused(); break;
       case "died": if (isHost) endRound(1); break;
+      case "q": showQ(m.q, m.sec); break;
+      case "qok": answered(); break;
+      case "a": checkAnswer(m.a); break;
     }
   }
 
@@ -498,6 +536,8 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     if (e.repeat || !S.live) return;
     if (e.code === "KeyR") reload();
     if (e.code === "KeyV") knife();
+    if (e.code === "KeyQ") S.leanT = S.leanT === -1 ? 0 : -1;      // lean toggles, also while aiming
+    if (e.code === "KeyE") S.leanT = S.leanT === 1 ? 0 : 1;
     if (e.code === "KeyG" && S.gren > 0 && !S.g && !p.vault) S.aim = true;
     if (e.code.startsWith("Digit")) { const n = +e.code.slice(5); if (n >= 1 && n <= WEAPONS.length) { S.w = n - 1; S.rel = 0; } }
   });
@@ -510,7 +550,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     const w = WEAPONS[S.w], a = ammo[S.w];
 
     // lean (hold Q/E), blocked by walls
-    let lt = S.live && !p.vault ? (keys.KeyE ? 1 : 0) - (keys.KeyQ ? 1 : 0) : 0;
+    let lt = S.live && !p.vault ? S.leanT : 0;
     const rx = Math.cos(p.yaw) * 0.4, rz = -Math.sin(p.yaw) * 0.4;
     if (lt) { p.x += rx * lt; p.z += rz * lt; const b = hit(H[p.stance]); p.x -= rx * lt; p.z -= rz * lt; if (b) lt = 0; }
     S.lean += (lt - S.lean) * Math.min(1, dt * 10);
@@ -541,7 +581,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
 
     pvLine.visible = marker.visible = S.aim && S.live && !p.vault;
     if (pvLine.visible) preview();
-    if (S.g) {
+    if (S.g && S.live) {
       S.g.acc += dt;
       while (S.g && S.g.acc >= GSTEP) { S.g.acc -= GSTEP; if (gstep(S.g)) { boom(S.g); S.g = null; } }
     }
@@ -555,7 +595,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
       const mv = Math.hypot(rp.x - ox, rp.z - oz), sp = Math.min(1, mv / dt / 2);
       S.ph += mv * 4; legL.rotation.x = Math.sin(S.ph) * 0.7 * sp; legR.rotation.x = -legL.rotation.x;
       rig.visible = true; rig.position.set(rp.x, rp.y + (rp.st === 2 ? 0.15 : 0), rp.z); rig.rotation.set(0, rp.yaw, 0); rig.scale.y = 1;
-      if (rp.st === 2) { rig.rotation.x = -Math.PI / 2; rig.scale.y = 0.45; } else if (rp.st === 1 || rp.vault) rig.scale.y = H[1] / H[0];
+      if (rp.st === 2) { rig.rotation.x = -Math.PI / 2; rig.scale.y = 0.45; } else if (rp.vault) rig.scale.y = VH / H[0]; else if (rp.st === 1) rig.scale.y = H[1] / H[0];
       head.rotation.x = rp.pitch;
       if (rp.st === 0 && !rp.vault && S.live) { S.fs += Math.hypot(rp.x - ox, rp.z - oz); if (S.fs >= 2) { S.fs = 0; pulse(); } }
     }
@@ -563,6 +603,11 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     if (S.live) {
       if (S.bomb) { S.bLeft -= dt; if (isHost && S.bLeft <= 0) endRound(S.att); }
       else { S.rLeft -= dt; if (isHost && S.rLeft <= 0) endRound(3 - S.att); }
+    }
+    if (S.live && quizOn && (S.mt += dt) >= S.nq) { S.nq += quiz.every * 60; ask(); }       // periodic question pauses both players
+    if (S.qKind || qbox.style.display !== "none") {      // question countdown (the host enforces the limit)
+      S.qT -= dt; qsec.textContent = Math.ceil(Math.max(0, S.qT)) + " s";
+      if (S.qKind && S.qT <= 0) nextQ();
     }
     let need = 0;                                    // hold F: attacker plants 3 s, defender defuses 5 s
     if (S.live && keys.KeyF && !p.vault) {
@@ -594,6 +639,7 @@ export function startGame({ role = "guest", conn = null, mapId = null } = {}) {
     conn.on("close", () => { S.live = false; S.over = true; note.textContent = "Connection lost. Match ended."; });
   }
   if (msg) msg.style.display = "flex";
+  if (quizOn) S.nq = quiz.every * 60;
   if (isHost) startRound();
 
   let last = performance.now();

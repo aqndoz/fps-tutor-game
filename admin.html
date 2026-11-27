@@ -14,6 +14,12 @@
   <p><b>Host</b> <span id="st">Starting...</span></p>
   <button id="gen">New access code</button>
   <div id="codes"></div>
+  <fieldset><legend>Questions (the guest answers one before every spawn, and every N minutes)</legend>
+    <input id="qt" placeholder="Question" size="36"> <input id="qa" placeholder="Accepted answers, separated by |" size="28"> <button id="qadd">Add</button>
+    <div id="qlist"></div>
+    Every <input id="qevery" type="number" min="1" style="width:50px"> min, answer time <input id="qlimit" type="number" min="5" style="width:50px"> s<br>
+    <button id="qexp">Export JSON</button> <button id="qimp">Import JSON</button><br><textarea id="qjson" rows="3" cols="60"></textarea>
+  </fieldset>
   <p>Map <select id="map"></select> <button id="start">Start match</button> <small>(works solo too, for testing)</small></p>
 </div>
 <div id="msg">Click to play. WASD move, Space jump/vault, Shift sprint, C crouch, X prone, Q/E lean, LMB fire, RMB aim, R reload, 1-5 weapons, V knife, hold G grenade, hold F plant/defuse</div>
@@ -41,6 +47,31 @@
     $("map").innerHTML = '<option value="">Random</option>' + MAPS.map(m => `<option value="${m.id}">${m.name}</option>`).join("");
     render();
 
+    const qs = () => JSON.parse(localStorage.questions || "[]"), saveQ = q => (localStorage.questions = JSON.stringify(q));
+    const esc = s => s.replace(/[&<>"]/g, c => "&#" + c.charCodeAt(0) + ";");
+    const qset = JSON.parse(localStorage.qset || "{}"); $("qevery").value = qset.every || 5; $("qlimit").value = qset.limit || 30;
+    let edit = -1;
+    const renderQ = () => {
+      $("qlist").innerHTML = qs().map((q, i) => `<div>${i + 1}. ${esc(q.q)} = ${esc(q.a.join(" | "))} <button data-e="${i}">edit</button> <button data-d="${i}">delete</button></div>`).join("");
+    };
+    $("qlist").onclick = e => {
+      const d = e.target.dataset, q = qs();
+      if (d.d !== undefined) { q.splice(+d.d, 1); saveQ(q); renderQ(); }
+      if (d.e !== undefined) { edit = +d.e; $("qt").value = q[edit].q; $("qa").value = q[edit].a.join(" | "); $("qadd").textContent = "Save"; }
+    };
+    $("qadd").onclick = () => {
+      const t = $("qt").value.trim(), ans = $("qa").value.split("|").map(x => x.trim()).filter(Boolean);
+      if (!t || !ans.length) return;
+      const q = qs(); if (edit >= 0) q[edit] = { q: t, a: ans }; else q.push({ q: t, a: ans });
+      saveQ(q); edit = -1; $("qt").value = $("qa").value = ""; $("qadd").textContent = "Add"; renderQ();
+    };
+    $("qexp").onclick = () => ($("qjson").value = JSON.stringify(qs(), null, 1));
+    $("qimp").onclick = () => {
+      try { const q = JSON.parse($("qjson").value); if (!Array.isArray(q) || q.some(x => typeof x.q !== "string" || !Array.isArray(x.a))) throw 0; saveQ(q); renderQ(); }
+      catch { alert('Invalid JSON. Expected [{"q": "question", "a": ["answer", "other answer"]}]'); }
+    };
+    renderQ();
+
     let conn = null;
     const peer = new Peer(ROOM_ID);
     peer.on("error", e => ($("st").textContent = "Peer error: " + e.type));
@@ -55,7 +86,9 @@
       const id = $("map").value || MAPS[Math.floor(Math.random() * MAPS.length)].id;
       if (conn) conn.send({ t: "start", map: id });
       $("panel").hidden = true;
-      startGame({ role: "admin", conn, mapId: id });
+      const quiz = { qs: qs(), every: +$("qevery").value || 5, limit: +$("qlimit").value || 30 };
+      localStorage.qset = JSON.stringify({ every: quiz.every, limit: quiz.limit });
+      startGame({ role: "admin", conn, mapId: id, quiz });
     };
   }
 </script>

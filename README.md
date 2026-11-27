@@ -1,13 +1,16 @@
 # Tactical 1v1 (static site)
 
-Status: **stages 1-6 of 8** - movement, stances, vaulting, 5 weapons (semi/full auto, recoil, ADS, reload, lean, knife), cell-by-cell destructible walls with barricade groups, impact grenades with throw preview, PeerJS 1v1 with one-time codes, 10 Hz state sync, footstep indicator, bomb plant/defuse rounds (first to 5).
-Not built yet: question gate and ammo rewards (stage 7); loadouts, attachments, scopes, settings and the office map (stage 8).
+Status: **stages 1-7 of 8** - movement, stances, vaulting, 5 weapons, destructible cell walls with barricade groups, impact grenades, PeerJS 1v1 with one-time codes, bomb rounds (first to 5) and the question gate.
+Not built yet: loadouts, attachments, scopes, settings and the office map (stage 8).
 
 ## Play
 1. Edit `config.js`, deploy (below), open `admin.html`, enter the password, press "New access code".
 2. Send the code to your guest; they open `index.html`, enter it and press Join.
 3. Pick a map (or Random) and press "Start match". Starting without a guest is a solo test.
-Controls: WASD, Space jump/vault, Shift sprint, C crouch, X prone, Q/E lean (hold), LMB fire, RMB aim, R reload, 1-5 weapons, V knife, hold G for the grenade preview and release to throw, hold F to plant (3 s) or defuse (5 s).
+Controls: WASD, Space vault (only at crates and window sills; there is no jumping), Shift sprint, C crouch, X prone, Q/E lean (toggle, works while aiming), LMB fire, RMB aim, R reload, 1-5 weapons, V knife, hold G for the grenade preview and release to throw, hold F to plant (3 s) or defuse (5 s).
+
+## Questions
+In `admin.html` add questions (text plus accepted answers separated by `|`, case-insensitive), set the interval and the answer time, and use Export/Import JSON to back them up. The guest answers one before every spawn and every N minutes of match time (the match pauses for both players). A wrong answer or a timeout gives a new random question; a correct one gives +3 magazines of reserve for every weapon. With no questions saved, nobody is asked.
 
 ## Run locally
 ES modules need http, not file://: run `python3 -m http.server` in this folder and open `http://localhost:8000/admin.html`.
